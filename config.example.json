@@ -1,0 +1,29 @@
+{
+  "pollIntervalSeconds": 300,
+  "stateFile": "data/state.json",
+  "networkTimeoutMs": 30000,
+  "source": {
+    "host": "mail.csu.edu.cn",
+    "port": 993,
+    "username": "your-campus-email@example.edu.cn",
+    "password": "your-campus-email-password-or-app-password",
+    "mailbox": "INBOX",
+    "maxFetchPerRun": 10,
+    "maxBodyChars": 20000,
+    "tlsRejectUnauthorized": true
+  },
+  "target": {
+    "smtpHost": "smtp.qq.com",
+    "smtpPort": 465,
+    "username": "your-qq-email@qq.com",
+    "password": "your-qq-mail-authorization-code",
+    "to": "your-qq-email@qq.com",
+    "fromName": "Campus Mail Forwarder",
+    "tlsRejectUnauthorized": true
+  },
+  "forward": {
+    "subjectPrefix": "[校园邮箱转发]",
+    "firstRunMode": "checkpoint",
+    "heloName": "mail2qq.local"
+  }
+}

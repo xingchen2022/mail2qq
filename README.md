@@ -1,238 +1,293 @@
-# 📬 mail2tg
+# mail2qq
 
-> 将多路 IMAP 邮箱的新邮件，稳定推送到 Telegram。
-> 基于 Cloudflare Workers + D1，无需自建服务器，默认每 5 分钟自动同步一次。
+`mail2qq` 是一个本地运行的校园邮箱转发工具：定期从校园邮箱读取新邮件，并通过 QQ 邮箱 SMTP 转发到指定 QQ 邮箱。
 
-## ✨ 项目简介
+当前版本面向 Node.js v20.20.2，只使用 Node 内置模块，不依赖 Telegram、Cloudflare Worker、数据库或第三方 npm 包。
 
-`mail2tg` 是一个面向个人场景的邮件通知聚合工具。
+## 致谢与来源
 
-当前版本已经实现：
+本项目基于原 Git 项目 [yangyioryy/mail2tg](https://github.com/yangyioryy/mail2tg) 改造而来。感谢原作者提供邮件聚合、IMAP 拉取与消息转发方向的工程基础。
 
-- 同时轮询 `Gmail`、`QQ 邮箱`、`CSU 邮箱`
-- 基于 IMAP UID 做增量拉取，避免重复扫描旧邮件
-- 基于 D1 去重与投递日志，降低重复推送风险
-- 将邮件正文整理后直接发送到 Telegram
-- 通过 Cloudflare Cron 定时运行，适合低成本长期托管
+当前版本已经重构为本地 Node.js 工具，聚焦“校园邮箱 -> QQ 邮箱”这一单一场景，并移除了 Telegram、Cloudflare Worker、D1 等原有部署链路。
 
-这个项目适合以下场景：
+## 程序原理
 
-- 想把多个邮箱的提醒统一收敛到 Telegram
-- 想减少邮件 App 的频繁切换
-- 想用一个低维护成本方案做个人消息聚合
-
-## 🚀 核心特性
-
-- **多邮箱并发同步**：三个邮箱源独立执行，单个邮箱异常不会阻塞其它邮箱。
-- **增量检查点**：按 IMAP UID 记录同步游标，每次只拉取新增邮件。
-- **幂等投递保护**：同一封邮件成功投递后写入去重表，避免重复通知。
-- **正文解析能力**：支持 RFC 5322 / MIME，多部分邮件优先提取 `text/plain`，必要时从 `text/html` 降级抽取纯文本。
-- **常见编码兼容**：覆盖 `Base64`、`Quoted-Printable` 以及 `UTF-8`、`GBK` 等常见字符集。
-- **Telegram 失败分级处理**：`429`、`408`、`5xx` 视为可重试错误；明显不可重试错误会记失败状态，避免无限重放。
-- **零服务器运维**：运行在 Cloudflare Workers，持久化使用 D1，部署链路足够轻量。
-
-## 🏗️ 架构概览
+整体流程如下：
 
 ```text
-IMAP Mailboxes
-    │
-    ├── Gmail
-    ├── QQ Mail
-    └── CSU Mail
-    │
-    ▼
-Cloudflare Worker (Cron every 5 min)
-    │
-    ├── 拉取新 UID
-    ├── 解析 MIME 正文
-    ├── D1 检查点 / 去重 / 投递日志
-    └── Telegram Bot API 推送
-    │
-    ▼
-Telegram Chat / Group / Topic
+Node.js 进程
+  │
+  ├─ 读取 config.json
+  │
+  ├─ 通过 IMAPS 连接校园邮箱
+  │    ├─ SELECT INBOX 获取邮箱总数
+  │    ├─ UID SEARCH UNSEEN 获取未读数量
+  │    └─ UID SEARCH 获取上次游标之后的新邮件
+  │
+  ├─ 解析新邮件正文
+  │    ├─ 支持 text/plain
+  │    ├─ 支持 text/html 降级为纯文本
+  │    └─ 支持 Base64 / Quoted-Printable 解码
+  │
+  ├─ 通过 QQ SMTP 发送转发邮件
+  │
+  └─ 写入 data/state.json
+       └─ 保存最新 IMAP UID，避免重复转发
 ```
 
-## 🛠️ 技术栈
+它不是邮件服务器，也不是云服务。程序只在你运行它的电脑、服务器或 NAS 上工作；进程停止后就不会继续检查邮件。
 
-| 模块 | 技术选型 |
+## 功能
+
+- 定期检查校园邮箱 `INBOX`
+- 将新增邮件转发到 QQ 邮箱
+- 每次检查显示总数、未读、已读、新邮件和本次发送情况
+- 使用本地状态文件避免重复转发
+- 首次运行默认只建立检查点，不转发历史邮件
+- 空闲轮次不写状态文件，减少高频检查时的磁盘写入
+- 只转发正文，不处理附件
+
+## 安装说明
+
+### 1. 准备 Node.js
+
+确认当前 Node 版本：
+
+```bash
+node --version
+```
+
+建议输出为：
+
+```text
+v20.20.2
+```
+
+更高的 Node 20 小版本通常也可以。
+
+### 2. 准备邮箱权限
+
+校园邮箱需要支持 IMAP SSL 登录。常见端口是 `993`。
+
+QQ 邮箱需要在网页版设置里开启 `IMAP/SMTP` 服务，并生成授权码。注意：`target.password` 填 QQ 邮箱授权码，不是 QQ 登录密码。
+
+### 3. 准备配置文件
+
+复制模板：
+
+```bash
+cp config.example.json config.json
+```
+
+真实账号、密码和授权码只写入 `config.json`。该文件已被 `.gitignore` 忽略，不应提交。
+
+## 配置说明
+
+示例配置：
+
+```json
+{
+  "pollIntervalSeconds": 300,
+  "stateFile": "data/state.json",
+  "networkTimeoutMs": 30000,
+  "source": {
+    "host": "mail.csu.edu.cn",
+    "port": 993,
+    "username": "your-campus-email@example.edu.cn",
+    "password": "your-campus-email-password-or-app-password",
+    "mailbox": "INBOX",
+    "maxFetchPerRun": 10,
+    "maxBodyChars": 20000,
+    "tlsRejectUnauthorized": true
+  },
+  "target": {
+    "smtpHost": "smtp.qq.com",
+    "smtpPort": 465,
+    "username": "your-qq-email@qq.com",
+    "password": "your-qq-mail-authorization-code",
+    "to": "your-qq-email@qq.com",
+    "fromName": "Campus Mail Forwarder",
+    "tlsRejectUnauthorized": true
+  },
+  "forward": {
+    "subjectPrefix": "[校园邮箱转发]",
+    "firstRunMode": "checkpoint",
+    "heloName": "mail2qq.local"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
 | --- | --- |
-| 运行时 | Cloudflare Workers |
-| 定时调度 | Cron Triggers |
-| 邮件连接 | `cloudflare:sockets` + IMAPS |
-| 数据存储 | Cloudflare D1 |
-| 推送通道 | Telegram Bot API |
-| 开发语言 | TypeScript |
-| 测试 | Node.js Test Runner |
+| `pollIntervalSeconds` | 检查间隔，单位秒。设为 `1` 表示每秒检查一次 |
+| `stateFile` | 状态文件路径，用于保存已处理到的 IMAP UID |
+| `networkTimeoutMs` | IMAP/SMTP 网络超时时间，单位毫秒 |
+| `source.host` | 校园邮箱 IMAP 主机名，只写主机，不要写 `https://` |
+| `source.port` | IMAP SSL 端口，通常为 `993` |
+| `source.username` | 校园邮箱完整账号 |
+| `source.password` | 校园邮箱密码或客户端专用密码 |
+| `source.mailbox` | 要检查的邮箱文件夹，默认 `INBOX` |
+| `source.maxFetchPerRun` | 单轮最多读取并转发的新邮件数 |
+| `source.maxBodyChars` | 单封邮件正文最大保留字符数 |
+| `target.smtpHost` | QQ SMTP 主机名，通常为 `smtp.qq.com` |
+| `target.smtpPort` | QQ SMTP SSL 端口，通常为 `465` |
+| `target.username` | QQ 邮箱账号 |
+| `target.password` | QQ 邮箱授权码 |
+| `target.to` | 转发目标邮箱，可以和 `target.username` 相同 |
+| `target.fromName` | 转发邮件显示的发件人名称 |
+| `forward.subjectPrefix` | 转发邮件主题前缀 |
+| `forward.firstRunMode` | `checkpoint` 表示首次只建检查点；`forward` 表示首次也转发最近邮件 |
+| `forward.heloName` | SMTP `EHLO` 使用的名称，默认即可 |
 
-## 📦 目录结构
+## 使用方法
+
+### 单次检查
+
+```bash
+npm run once
+```
+
+适合初始化、调试或手动检查。
+
+首次运行默认会显示：
 
 ```text
-src/
-├── adapters/
-│   ├── fake.ts
-│   ├── imap-client.ts
-│   └── types.ts
-├── models/
-│   └── types.ts
-├── services/
-│   ├── dedupe.ts
-│   ├── sync.ts
-│   └── telegram.ts
-├── storage/
-│   ├── d1-stores.ts
-│   └── schema.sql
-└── index.ts
-
-scripts/
-└── self-check.mjs
-
-test/
-├── README.md
-└── mail2tg.test.ts
+【2026-06-05 19:15:05｜上海时间】首次初始化完成
+  邮箱统计：总数 624 封｜未读 3 封｜已读 621 封
+  新邮件：624 封｜本轮读取 7 封｜剩余待处理 617 封
+  本次发送：成功 0 封｜失败 0 封
+  当前游标：UID 1273
+  处理方式：本次不转发历史邮件，只转发之后的新邮件
 ```
 
-## ⚡ 快速开始
+这是正常行为。默认 `firstRunMode` 是 `checkpoint`，避免第一次启动时把历史邮件全部发到 QQ。
 
-### 1. 环境准备
-
-- [Node.js](https://nodejs.org/) 22+
-- Cloudflare 账号
-- Telegram Bot Token
-- 可用的 IMAP 邮箱账号与授权信息
-
-### 2. 克隆仓库
+### 常驻定期运行
 
 ```bash
-git clone https://github.com/yangyioryy/mail2tg.git
-cd mail2tg
-npm install
+npm start
 ```
 
-### 3. 创建 D1 数据库
+程序会按 `pollIntervalSeconds` 周期检查。终端关闭或进程退出后，检查会停止。
+
+### 指定配置文件
 
 ```bash
-npx wrangler login
-npx wrangler d1 create mail2tg
+node src/index.js --config config.json --once
 ```
 
-将返回的 `database_id` 写入 `wrangler.jsonc` 的 `d1_databases[0].database_id`。
+可以用这个方式测试不同配置。
 
-然后初始化表结构：
+## 输出说明
 
-```bash
-npx wrangler d1 execute mail2tg --remote --file src/storage/schema.sql
-```
-
-### 4. 配置 Telegram
-
-先通过 [@BotFather](https://t.me/BotFather) 创建 Bot，然后向 Bot 发送一条消息。
-
-访问：
+无新邮件时：
 
 ```text
-https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+【2026-06-05 19:15:05｜上海时间】检查完成，暂无新邮件
+  邮箱统计：总数 625 封｜未读 3 封｜已读 622 封
+  新邮件：0 封｜本轮读取 0 封｜剩余待处理 0 封
+  本次发送：成功 0 封｜失败 0 封
+  当前游标：UID 1273
 ```
 
-从返回结果中找到目标会话的 `chat.id`，作为 `TELEGRAM_DEFAULT_CHAT_ID`。
-
-### 5. 配置邮箱 IMAP 凭据
-
-| 邮箱 | 用户名 | 密码/授权方式 |
-| --- | --- | --- |
-| Gmail | 完整邮箱地址 | App Password |
-| QQ 邮箱 | 完整邮箱地址 | IMAP 授权码 |
-| CSU 邮箱 | 完整邮箱地址 | 邮箱密码或客户端专用密码 |
-
-### 6. 写入 Cloudflare Secrets
-
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put TELEGRAM_DEFAULT_CHAT_ID
-npx wrangler secret put GMAIL_USERNAME_SECRET
-npx wrangler secret put GMAIL_PASSWORD_SECRET
-npx wrangler secret put QQ_USERNAME_SECRET
-npx wrangler secret put QQ_PASSWORD_SECRET
-npx wrangler secret put CSU_USERNAME_SECRET
-npx wrangler secret put CSU_PASSWORD_SECRET
-```
-
-### 7. 部署
-
-```bash
-npx wrangler deploy
-```
-
-部署完成后：
-
-- 访问 Worker URL 可手动触发一次同步
-- 返回 JSON 中会包含每个邮箱的 `fetched` / `sent` 计数
-- Cloudflare Cron 会按 `*/5 * * * *` 自动继续执行
-
-## 🔐 环境变量说明
-
-| 变量名 | 用途 | 类型 |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | Secret |
-| `TELEGRAM_DEFAULT_CHAT_ID` | 默认接收消息的 Chat ID | Secret |
-| `GMAIL_USERNAME_SECRET` | Gmail 账号 | Secret |
-| `GMAIL_PASSWORD_SECRET` | Gmail App Password | Secret |
-| `QQ_USERNAME_SECRET` | QQ 邮箱账号 | Secret |
-| `QQ_PASSWORD_SECRET` | QQ 邮箱授权码 | Secret |
-| `CSU_USERNAME_SECRET` | CSU 邮箱账号 | Secret |
-| `CSU_PASSWORD_SECRET` | CSU 邮箱密码/授权信息 | Secret |
-| `MAIL2TG_SUMMARY_LIMIT` | 摘要长度配置项 | Var |
-| `MAIL2TG_LOG_LEVEL` | 日志级别 | Var |
-
-## 🧪 本地开发与验证
-
-先复制本地变量模板：
-
-```bash
-cp .dev.vars.example .dev.vars
-```
-
-然后执行常用命令：
-
-```bash
-npm run dev
-npm run self-check
-npm run typecheck
-npm test
-```
-
-当前仓库内置了：
-
-- `self-check`：检查关键项目文件是否齐全
-- `typecheck`：做 TypeScript 静态类型校验
-- `test`：覆盖 Telegram 渲染、去重、同步流程与端到端模拟
-
-## 📨 Telegram 消息示例
+有新邮件并转发成功时：
 
 ```text
-<b>[GMAIL] New message subject</b>
-📤 发件人：sender@example.com
-🕐 时间：Tue, 22 Apr 2026 10:00:00 +0800
-🔗 链接：https://mail.example.com/message/1
-
-这里会展示邮件正文的纯文本内容。
-如果正文为空，则回退为摘要内容。
+【2026-06-05 19:16:02｜上海时间】检查完成，已转发新邮件
+  邮箱统计：总数 626 封｜未读 4 封｜已读 622 封
+  新邮件：1 封｜本轮读取 1 封｜剩余待处理 0 封
+  本次发送：成功 1 封｜失败 0 封
+  当前游标：UID 1274
+  已发送邮件：
+    - UID 1274：测试邮件
 ```
 
-## 📌 设计取舍
+转发失败时会额外显示失败 UID 和错误原因。失败邮件不会推进游标，下次检查会继续重试。
 
-- 为了适配 Telegram 单条消息限制，正文会在安全长度内截断
-- 为了降低 Worker 内存压力，超大原始邮件不会被完整保留
-- 当前版本聚焦“稳定通知”，不追求完整邮件客户端体验
-- 邮箱列表目前在代码中固定定义，后续可抽象为配置化来源
+## 状态文件
 
-## 🗺️ Roadmap
+默认状态文件是：
 
-- 支持更多邮箱源或配置化邮箱列表
-- 支持多 Chat / 多 Topic 路由
-- 支持人工重同步入口
-- 支持更细粒度的摘要与分类策略
-- 增加运行日志、告警与可观测性
+```text
+data/state.json
+```
 
-## 📄 License
+它记录：
 
-MIT
+- 是否已经初始化
+- 当前处理到的最大 IMAP UID
+- 已经发送成功但尚未推进游标的 UID
+
+不要随意删除该文件。删除后程序会认为自己是首次运行，可能重新建立检查点或重新处理历史邮件。
+
+## 高频检查建议
+
+你可以把检查间隔设为 1 秒：
+
+```json
+"pollIntervalSeconds": 1
+```
+
+程序已经避免重叠运行：上一轮没结束时不会启动下一轮。空闲时也不会重复写状态文件。
+
+不过，1 秒检查一次仍然会频繁连接校园邮箱，对网络和邮箱服务器更敏感。长期运行更建议使用 `5` 到 `60` 秒之间的间隔。
+
+## 验证
+
+语法检查：
+
+```bash
+node --check src/index.js
+```
+
+查看 Node 版本：
+
+```bash
+node --version
+```
+
+单次真实检查：
+
+```bash
+npm run once
+```
+
+## 注意事项
+
+- `source.host` 和 `target.smtpHost` 只写主机名，例如 `mail.bit.edu.cn`，不要写 `https://mail.bit.edu.cn/`。
+- QQ 邮箱必须使用授权码，不能使用 QQ 登录密码。
+- `config.json` 含有真实账号和密码，不要提交、截图或分享。
+- 默认不转发历史邮件；如果确实要转发历史邮件，把 `forward.firstRunMode` 改为 `forward`。
+- 本项目只转发邮件正文，不转发附件。
+- 如果校园邮箱要求客户端专用密码，需要先在学校邮箱系统中生成。
+- 如果长期运行，建议放在稳定在线的电脑、NAS 或服务器上。
+
+## 常见问题
+
+### `getaddrinfo ENOTFOUND`
+
+通常是 `source.host` 写错了。主机名不要带协议和路径：
+
+```json
+"host": "mail.bit.edu.cn"
+```
+
+不要写：
+
+```json
+"host": "https://mail.bit.edu.cn/"
+```
+
+### `IMAP 命令失败 LOGIN`
+
+通常是校园邮箱账号、密码、客户端授权码或 IMAP 权限问题。
+
+### QQ SMTP 登录失败
+
+确认 `target.password` 是 QQ 邮箱授权码，并且 QQ 邮箱已开启 IMAP/SMTP 服务。
+
+### 没有收到转发邮件
+
+先看终端输出里的 `本次发送` 和 `失败详情`。如果显示成功但 QQ 收件箱没有邮件，检查垃圾箱、拦截规则或 QQ 邮箱自发自收策略。
